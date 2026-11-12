@@ -23,6 +23,7 @@ dependencies = [
 ]
 
 [project.urls]
+PyPI = "https://pypi.org/project/eddy-pg/"
 Repository = "https://github.com/Anhui-tqhuang/eddy-python"
 "Go library" = "https://github.com/Anhui-tqhuang/eddy"
 

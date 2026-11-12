@@ -6,6 +6,8 @@
 
 <p align="center">Reconcile loops for Python, with Postgres as the only moving part.<br>Job-compatible with <a href="https://github.com/Anhui-tqhuang/eddy">eddy for Go</a>.</p>
 
+<p align="center"><a href="https://pypi.org/project/eddy-pg/">pypi.org/project/eddy-pg</a></p>
+
 ---
 
 > **Status:** pre-alpha. The API may still change.
@@ -19,6 +21,8 @@ This is the Python library. It stores jobs in the same tables and format as the 
 ```sh
 pip install eddy-pg        # or: uv add eddy-pg
 ```
+
+The package is published on PyPI as [`eddy-pg`](https://pypi.org/project/eddy-pg/) and imported as `eddy_pg`.
 
 It needs Python 3.14+, and uses psycopg 3 (asyncio) and Pydantic 2. Nothing else has to be installed: eddy keeps its jobs in [River](https://riverqueue.com)'s tables, and `DB.open` creates them.
 
