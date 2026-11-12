@@ -282,7 +282,20 @@ make test-db   # everything, against Postgres
 
 The interop tests also need Go on the PATH: a small Go program under `tests/support/gohelper` plays the Go side. Without Go they are skipped.
 
-River's migration files live in `src/eddy_pg/river_migrations`. To pick up a newer River, run `scripts/sync-river-migrations.sh <version>`; never edit them by hand.
+## River version
+
+eddy-python is built against River **v0.51.2**. That is the version of the migration files bundled in `src/eddy_pg/river_migrations`, and the version the job SQL in `src/eddy_pg/_river.py` was written for.
+
+> **Keep this repository and [eddy](https://github.com/Anhui-tqhuang/eddy) (Go) on the same River version.** The two libraries share River's tables, so they must agree on the table layout.
+
+Upgrading River here can need code changes, not just new files. River's Go client is the only official worker, and this library reimplements what it does. When upgrading:
+
+1. Upgrade the Go library first (its `go.mod`), and note the new River version.
+2. Run `scripts/sync-river-migrations.sh <version>` to copy that version's migration files. Never edit them by hand.
+3. Read River's changelog and the new migration files for changes to `river_job` or to how jobs are fetched, completed, retried, snoozed or rescued. Update `src/eddy_pg/_river.py` to match, and raise `MIN_VERSION` in `src/eddy_pg/_migrate.py` if the code now needs a newer layout.
+4. Point `tests/support/gohelper/go.mod` at a Go eddy commit that uses the new River version.
+5. Run `make test-db` with Go installed. The interop tests are the check that matters: they compare this library's migration with River's own and run both libraries against one database.
+6. Change the version stated in this section and in `src/eddy_pg/river_migrations/NOTICE.md`.
 
 ## Releasing
 

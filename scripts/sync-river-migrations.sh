@@ -13,4 +13,6 @@ rm -f "${DEST}"/*.up.sql
 cp "${dir}"/migration/main/*.up.sql "${DEST}/"
 cp "${dir}/LICENSE" "${DEST}/LICENSE"
 chmod 644 "${DEST}"/*
-echo "Copied River ${VERSION} migrations into ${DEST}. Update the version in ${DEST}/NOTICE.md."
+echo "Copied River ${VERSION} migrations into ${DEST}."
+echo "Now follow the rest of \"River version\" in README.md: the job SQL may need changes too,"
+echo "and the Go eddy library must be on the same River version."
