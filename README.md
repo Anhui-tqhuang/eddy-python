@@ -130,6 +130,36 @@ class App(BaseModel):
     reconciled_at: Annotated[datetime | None, eddy_pg.Reconciled] = None  # time of the last success
 ```
 
+## Soft delete
+
+eddy has no soft-delete setting. A soft delete is an ordinary update that the reconciler acts on. Use it when the row should stay visible while its resources are torn down, or when a failed teardown should show in the row's status columns.
+
+```python
+class App(BaseModel):
+    ...
+    deleted_at: datetime | None = None  # set by the API; an ordinary column
+
+
+# API: mark the row. Its reconcile is enqueued like any other write.
+await apps.execute(db, "UPDATE apps SET deleted_at = now() WHERE id = %s", (app_id,))
+
+
+# Controller: tear down, then remove the row.
+@ctl.reconcile(apps)
+async def reconcile_app(app: App) -> None:
+    if app.deleted_at is not None:
+        await undeploy(app)  # raising retries; the row and its error stay visible
+        async with db.pool.connection() as conn:
+            await conn.execute("DELETE FROM apps WHERE id = %s", (app.id,))
+        return
+    ...
+```
+
+- **Remove the row with plain SQL on a connection.** It enqueues nothing, so the table needs no teardown function. `apps.delete` would enqueue a teardown for work that is already done.
+- **The teardown branch must be idempotent.** Until the row is removed, the resync keeps reconciling it.
+- **To keep the row for good,** skip the final `DELETE`, record that teardown finished in a status field, and return early when it is set.
+- **Filter your own reads.** `get` and `select` return soft-deleted rows; add `deleted_at IS NULL` where the API should hide them.
+
 ## Field markers
 
 Columns are the model's fields, by name. Markers go in `Annotated[...]`:
