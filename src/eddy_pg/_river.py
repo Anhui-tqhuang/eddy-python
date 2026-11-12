@@ -10,8 +10,8 @@ that a Go eddy process and a Python one can share a queue:
                          -> scheduled (asked for a Retry)    -> available
                          -> cancelled (Permanent) / discarded (out of attempts)
 
-This is the one place that depends on River's table layout. It was written
-against River's migration version 6 and later.
+This is the one place that depends on River's table layout; _migrate.py
+creates that layout from River's own migration files.
 """
 
 from __future__ import annotations
@@ -26,12 +26,10 @@ from psycopg import AsyncConnection
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
-from ._errors import MigrationsMissing
-from ._kind import Ref, Settings, dumps, queue_for
+from ._kind import Ref, Settings, dumps, fnv64a_signed, queue_for
 
 JOB_KIND = "eddy.reconcile"  # the Go library's job kind
 MAX_ATTEMPTS = 25  # River's default
-MIN_MIGRATION = 6
 MAX_ATTEMPTED_BY = 100
 MAX_ERROR_LEN = 1024
 
@@ -71,23 +69,6 @@ class Job:
     @property
     def ref(self) -> Ref:
         return Ref(self.kind, dumps(self.key), deleted=self.gone is not None)
-
-
-async def check_migrated(conn: AsyncConnection[Any]) -> None:
-    """Fail clearly when River's tables are not there to be used."""
-    cur = await conn.execute("SELECT to_regclass('river_job') IS NOT NULL")
-    row = await cur.fetchone()
-    version = 0
-    if row and row[0]:
-        cur = await conn.execute("SELECT coalesce(max(version), 0) FROM river_migration")
-        row = await cur.fetchone()
-        version = int(row[0]) if row else 0
-    if version < MIN_MIGRATION:
-        raise MigrationsMissing(
-            "River's tables are missing or too old in this schema "
-            f"(found migration {version}, need {MIN_MIGRATION}+). Create them with River's CLI "
-            "(`river migrate-up --database-url ...`) or by starting any Go eddy process."
-        )
 
 
 async def insert(conn: AsyncConnection[Any], base_queue: str, jobs: list[NewJob]) -> None:
@@ -271,3 +252,8 @@ async def delete_finished(conn: AsyncConnection[Any], queues: list[str]) -> None
         """,
         (queues,),
     )
+
+
+def object_lock_key(ref: Ref) -> int:
+    """The advisory-lock key for one object; the Go library derives the same."""
+    return fnv64a_signed(f"eddy/object:{ref}".encode())

@@ -3,8 +3,8 @@ name = "eddy-pg"
 version = "0.1.0"
 description = "Reconcile loops for Python, with Postgres as the only moving part. Job-compatible with the Go eddy library."
 readme = "README.md"
-license = "MIT"
-license-files = ["LICENSE"]
+license = "MIT AND MPL-2.0"
+license-files = ["LICENSE", "src/eddy_pg/river_migrations/LICENSE"]
 authors = [{ name = "Tianqiu Huang" }]
 requires-python = ">=3.14"
 keywords = ["postgres", "reconcile", "controller", "river", "queue"]
@@ -26,6 +26,14 @@ dependencies = [
 Repository = "https://github.com/Anhui-tqhuang/eddy-python"
 "Go library" = "https://github.com/Anhui-tqhuang/eddy"
 
+[project.optional-dependencies]
+otel = [
+    "opentelemetry-api>=1.27",
+]
+prometheus = [
+    "prometheus-client>=0.20",
+]
+
 [dependency-groups]
 dev = [
     "pytest>=8",
@@ -34,6 +42,9 @@ dev = [
     "pyhamcrest>=2.1",
     "ruff>=0.8",
     "mypy>=1.13",
+    "opentelemetry-sdk>=1.27",
+    "opentelemetry-api>=1.27",
+    "prometheus-client>=0.20",
 ]
 
 [build-system]
@@ -49,8 +60,8 @@ asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
 markers = [
     "unit: no database needed",
-    "integration: needs Postgres (EDDY_TEST_DATABASE_URL) and Go, for River's tables",
-    "interop: also runs the Go eddy library against the same database",
+    "integration: needs Postgres (EDDY_TEST_DATABASE_URL)",
+    "interop: also needs Go, to run the Go eddy library against the same database",
 ]
 
 [tool.ruff]

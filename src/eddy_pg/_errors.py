@@ -32,3 +32,22 @@ class Permanent(Exception):
     instead of retried. Use it when the row itself is invalid and only a new
     write can fix it.
     """
+
+
+OUTCOME_OK = "ok"  # reconciled
+OUTCOME_RETRY = "retry"  # asked to be checked again later (Retry)
+OUTCOME_ERROR = "error"  # failed; will be retried
+OUTCOME_PERMANENT = "permanent"  # failed for good (Permanent)
+
+
+def outcome(error: BaseException | None) -> str:
+    """Classify how a reconcile ended, for metrics and tracing: "ok", "retry",
+    "error" or "permanent". The Go library's instrumentation uses the same
+    values."""
+    if error is None:
+        return OUTCOME_OK
+    if isinstance(error, Permanent):
+        return OUTCOME_PERMANENT
+    if isinstance(error, Retry):
+        return OUTCOME_RETRY
+    return OUTCOME_ERROR

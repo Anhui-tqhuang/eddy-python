@@ -16,7 +16,7 @@ from hamcrest import assert_that, equal_to, is_, not_none
 
 import eddy_pg
 
-from .conftest import App, apps, controller, eventually, running, scalar
+from .conftest import App, apps, controller, eventually, open_pool, running, scalar
 
 pytestmark = [pytest.mark.integration, pytest.mark.interop]
 
@@ -51,6 +51,64 @@ async def go_controller(gohelper: Path, database_url: str, schema: str) -> Async
         with contextlib.suppress(ProcessLookupError):
             proc.terminate()
         await proc.wait()
+
+
+SCHEMA_SHAPE = """
+SELECT 'column', table_name::text, column_name::text,
+       data_type || ' ' || is_nullable || ' ' || replace(coalesce(column_default, ''), %(s)s, '')
+FROM information_schema.columns WHERE table_schema = %(s)s
+UNION ALL
+SELECT 'index', tablename::text, indexname::text, replace(indexdef, %(s)s, '')
+FROM pg_indexes WHERE schemaname = %(s)s
+UNION ALL
+SELECT 'constraint', conrelid::regclass::text, conname::text,
+       replace(pg_get_constraintdef(c.oid), %(s)s, '')
+FROM pg_constraint c JOIN pg_namespace n ON n.oid = c.connamespace WHERE n.nspname = %(s)s
+UNION ALL
+SELECT 'function', '', p.proname::text, replace(pg_get_functiondef(p.oid), %(s)s, '')
+FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = %(s)s
+ORDER BY 1, 2, 3
+"""
+
+
+async def shape(db: eddy_pg.DB, schema: str) -> list[tuple[str, ...]]:
+    """Everything in a schema, with the schema's own name removed."""
+    async with db.pool.connection() as conn:
+        cur = await conn.execute(SCHEMA_SHAPE, {"s": schema})
+        return [
+            tuple(str(v).replace(f"{schema}.", "") for v in row) for row in await cur.fetchall()
+        ]
+
+
+async def test_python_migration_matches_rivers_own(
+    gohelper: Path, database_url: str, empty_schema: str
+) -> None:
+    # One schema migrated by Go (River itself), one by this package.
+    by_go = empty_schema
+    by_python = empty_schema + "_py"
+    await go(gohelper, database_url, by_go, "migrate")
+    go_pool = await open_pool(database_url, by_go)
+    try:
+        async with go_pool.connection() as conn:
+            await conn.execute(f"CREATE SCHEMA {by_python}")  # type: ignore[arg-type]
+        py_pool = await open_pool(database_url, by_python)
+        try:
+            await eddy_pg.migrate(py_pool)
+            go_shape = await shape(await eddy_pg.DB.open(go_pool, migrate=False), by_go)
+            py_shape = await shape(await eddy_pg.DB.open(py_pool, migrate=False), by_python)
+            # Go accepts the Python-migrated schema as current, and the reverse.
+            await go(gohelper, database_url, by_python, "check")
+            untouched = await eddy_pg.migrate(go_pool)
+        finally:
+            await py_pool.close()
+            async with go_pool.connection() as conn:
+                await conn.execute(f"DROP SCHEMA {by_python} CASCADE")  # type: ignore[arg-type]
+    finally:
+        await go_pool.close()
+
+    assert_that(len(go_shape) > 40, is_(True))
+    assert_that(py_shape, equal_to(go_shape))
+    assert_that(untouched, equal_to([]))
 
 
 async def test_python_api_go_controller(

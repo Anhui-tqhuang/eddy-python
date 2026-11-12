@@ -38,6 +38,13 @@ def attempt() -> int:
     return _attempt.get()
 
 
+_BUSY_RETRY = 1.0  # seconds before retrying an object another process holds
+
+
+class _Busy(Exception):
+    """Another process holds the object's advisory lock."""
+
+
 class UnknownKind(Exception):
     """A job's kind has no reconciler here. It is retried, so jobs enqueued
     ahead of a rollout are not lost."""
@@ -92,6 +99,7 @@ class Controller:
         poll_interval: float = 1.0,
         lock_retry: float = 2.0,
         rescue_after: float = 3600.0,
+        object_locks: bool = False,
     ) -> None:
         """
         workers: reconciles running at once on the shared queue; kinds with
@@ -106,6 +114,11 @@ class Controller:
         lock_retry: how often a follower retries the lock and the leader
             checks its connection.
         rescue_after: jobs left running this long by a dead worker are retried.
+        object_locks: take a Postgres advisory lock per object for the length
+            of each reconcile, so no two processes ever reconcile one object
+            at once, even across a leadership handoff or with ``elect=False``
+            on several replicas. Each running reconcile then holds one extra
+            pool connection: size the pool for at least twice the workers.
         """
         if workers < 1:
             raise ValueError("workers must be at least 1")
@@ -120,6 +133,7 @@ class Controller:
         self._poll = poll_interval
         self._lock_retry = lock_retry
         self._rescue_after = rescue_after
+        self._object_locks = object_locks
 
         self._tables: dict[str, _TableReg[Any]] = {}
         self._kinds: dict[str, _KindReg] = {}
@@ -430,13 +444,20 @@ class Controller:
     # -- one job ----------------------------------------------------------
 
     @contextlib.asynccontextmanager
-    async def _object_lock(self, key: str) -> AsyncGenerator[None]:
-        """Serialise reconciles of one object, even when it was enqueued twice."""
+    async def _object_lock(self, ref: Ref) -> AsyncGenerator[None]:
+        """Serialise reconciles of one object, even when it was enqueued
+        twice: within this process always, and across processes with
+        object_locks. Raises _Busy when another process holds the object."""
+        key = str(ref)
         lock, users = self._locks.get(key, (asyncio.Lock(), 0))
         self._locks[key] = (lock, users + 1)
         try:
             async with lock:
-                yield
+                if not self._object_locks:
+                    yield
+                    return
+                async with self._advisory_lock(ref):
+                    yield
         finally:
             lock, users = self._locks[key]
             if users <= 1:
@@ -444,17 +465,56 @@ class Controller:
             else:
                 self._locks[key] = (lock, users - 1)
 
+    @contextlib.asynccontextmanager
+    async def _advisory_lock(self, ref: Ref) -> AsyncGenerator[None]:
+        """Hold the object's advisory lock, on a connection of its own, for
+        the length of the block. Raises _Busy when another process has it."""
+        key = _river.object_lock_key(ref)
+        conn: Conn = await self._db.pool.getconn()
+        try:
+            await conn.set_autocommit(True)
+            cur = await conn.execute("SELECT pg_try_advisory_lock(%s)", (key,))
+            row = await cur.fetchone()
+            got = bool(row and row[0])
+            if not got:
+                await conn.set_autocommit(False)
+        except BaseException:
+            await self._discard(conn)
+            raise
+        if not got:
+            await self._db.pool.putconn(conn)
+            raise _Busy
+        try:
+            yield
+        finally:
+            try:
+                await conn.execute("SELECT pg_advisory_unlock(%s)", (key,))
+                await conn.set_autocommit(False)
+            except Exception:
+                # The session may still hold the lock: close it rather than reuse it.
+                with contextlib.suppress(Exception):
+                    await conn.close()
+            await self._db.pool.putconn(conn)
+
+    async def _discard(self, conn: Conn) -> None:
+        with contextlib.suppress(Exception):
+            await conn.close()
+        await self._db.pool.putconn(conn)
+
     async def _work(self, job: Job) -> None:
         ref = job.ref
         outcome: Callable[[Conn], Awaitable[Any]]
         try:
-            async with self._object_lock(str(ref)):
+            async with self._object_lock(ref):
                 token = _attempt.set(job.attempt)
                 try:
                     await self._chain(ref, job)
                 finally:
                     _attempt.reset(token)
             outcome = lambda c: _river.complete(c, job)  # noqa: E731
+        except _Busy:
+            # Another process is on this object: look again shortly.
+            outcome = lambda c: _river.snooze(c, job, _BUSY_RETRY)  # noqa: E731
         except Retry as r:
             after = r.after
             outcome = lambda c: _river.snooze(c, job, after)  # noqa: E731

@@ -1,8 +1,8 @@
 """Shared fixtures.
 
-Integration tests need Postgres (EDDY_TEST_DATABASE_URL) and Go: River's
-tables are created by the Go eddy library, through tests/support/gohelper.
-Without either, those tests are skipped.
+Integration tests need Postgres (EDDY_TEST_DATABASE_URL). Interop tests also
+need Go, to run the Go eddy library through tests/support/gohelper. Without
+what they need, tests are skipped.
 """
 
 from __future__ import annotations
@@ -68,7 +68,7 @@ def database_url() -> str:
 def gohelper(database_url: str) -> Path:
     """The Go helper binary, built once per run."""
     if shutil.which("go") is None:
-        pytest.skip("Go is needed to create River's tables")
+        pytest.skip("Go is needed to run the Go eddy library")
     binary = HELPER_DIR / "gohelper"
     subprocess.run(["go", "build", "-o", str(binary), "."], cwd=HELPER_DIR, check=True)
     return binary
@@ -87,16 +87,15 @@ def empty_schema(database_url: str) -> Generator[str]:
 
 
 @pytest.fixture
-def schema(empty_schema: str, database_url: str, gohelper: Path) -> str:
-    """A fresh schema with River's tables and the test tables."""
-    subprocess.run([str(gohelper), database_url, empty_schema, "migrate"], check=True)
+def schema(empty_schema: str, database_url: str) -> str:
+    """A fresh schema with the test tables; DB.open adds River's."""
     with psycopg.connect(database_url, autocommit=True) as conn:
         conn.execute(f"SET search_path = {empty_schema}")
         conn.execute(APPS_DDL)
     return empty_schema
 
 
-async def _pool(database_url: str, schema: str) -> AsyncConnectionPool[Any]:
+async def open_pool(database_url: str, schema: str) -> AsyncConnectionPool[Any]:
     pool: AsyncConnectionPool[Any] = AsyncConnectionPool(
         database_url,
         kwargs={"options": f"-c search_path={schema}"},
@@ -110,7 +109,7 @@ async def _pool(database_url: str, schema: str) -> AsyncConnectionPool[Any]:
 
 @pytest.fixture
 async def pool(database_url: str, schema: str) -> AsyncGenerator[AsyncConnectionPool[Any]]:
-    pool = await _pool(database_url, schema)
+    pool = await open_pool(database_url, schema)
     try:
         yield pool
     finally:

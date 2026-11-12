@@ -9,7 +9,7 @@ from typing import Any
 from psycopg import AsyncConnection
 from psycopg_pool import AsyncConnectionPool
 
-from . import _river
+from . import _migrate, _river
 from ._kind import DEFAULT_QUEUE, Ref
 
 type Conn = AsyncConnection[Any]
@@ -47,12 +47,15 @@ class DB:
         self.queue = queue
 
     @classmethod
-    async def open(cls, pool: Pool, *, queue: str = DEFAULT_QUEUE) -> DB:
-        """Return a DB on ``pool`` after checking that River's tables, which
-        hold eddy's jobs, exist. Raises MigrationsMissing when they do not."""
+    async def open(cls, pool: Pool, *, queue: str = DEFAULT_QUEUE, migrate: bool = True) -> DB:
+        """Return a DB on ``pool``. Unless ``migrate`` is False, it first
+        creates or upgrades River's tables, which hold eddy's jobs; with
+        ``migrate=False`` it raises MigrationsMissing when they are missing."""
         db = cls(pool, queue=queue)
+        if migrate:
+            await _migrate.migrate(pool)
         async with pool.connection() as conn:
-            await _river.check_migrated(conn)
+            await _migrate.check(conn)
         return db
 
     @asynccontextmanager

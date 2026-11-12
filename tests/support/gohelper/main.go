@@ -3,6 +3,7 @@
 // same database so the two libraries can be checked against each other.
 //
 //	gohelper <database-url> <schema> migrate
+//	gohelper <database-url> <schema> check
 //	gohelper <database-url> <schema> insert <name> <image>
 //	gohelper <database-url> <schema> delete <id>
 //	gohelper <database-url> <schema> run
@@ -61,14 +62,18 @@ func run(args []string) error {
 	}
 	defer pool.Close()
 
-	quiet := eddy.WithLogger(slog.New(slog.DiscardHandler))
-	db, err := eddy.Open(ctx, pool, quiet) // creates River's tables
+	opts := []eddy.Option{eddy.WithLogger(slog.New(slog.DiscardHandler))}
+	if args[2] == "check" {
+		// Fail, rather than migrate, unless River's tables are already current.
+		opts = append(opts, eddy.WithoutMigrate())
+	}
+	db, err := eddy.Open(ctx, pool, opts...) // creates River's tables
 	if err != nil {
 		return err
 	}
 
 	switch cmd, rest := args[2], args[3:]; cmd {
-	case "migrate":
+	case "migrate", "check":
 		return nil
 	case "insert":
 		if len(rest) != 2 {

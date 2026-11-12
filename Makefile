@@ -9,8 +9,8 @@ sync:
 test:
 	uv run pytest -m unit
 
-# Everything, against a local Postgres. Needs Go, which creates River's tables
-# and plays the Go side of the interop tests.
+# Everything, against a local Postgres. The interop tests also need Go, which
+# plays the Go side; without it they are skipped.
 test-db:
 	EDDY_TEST_DATABASE_URL=$(TEST_DB_URL) uv run pytest --cov=eddy_pg --cov-report=term-missing
 

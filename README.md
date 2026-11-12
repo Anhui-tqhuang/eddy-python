@@ -20,14 +20,7 @@ This is the Python library. It stores jobs in the same tables and format as the 
 pip install eddy-pg        # or: uv add eddy-pg
 ```
 
-It needs Python 3.14+, and uses psycopg 3 (asyncio) and Pydantic 2.
-
-eddy keeps its jobs in [River](https://riverqueue.com)'s tables, which must exist in your database. Create them in one of two ways:
-
-- Start any Go eddy process on the database; it creates them.
-- Run River's CLI: `go install github.com/riverqueue/river/cmd/river@latest`, then `river migrate-up --database-url "$DATABASE_URL"`.
-
-`DB.open` raises `MigrationsMissing` when they are absent.
+It needs Python 3.14+, and uses psycopg 3 (asyncio) and Pydantic 2. Nothing else has to be installed: eddy keeps its jobs in [River](https://riverqueue.com)'s tables, and `DB.open` creates them.
 
 ## Quick start
 
@@ -54,7 +47,7 @@ apps = eddy_pg.Table(App, "apps")
 
 pool = AsyncConnectionPool(DATABASE_URL, open=False)
 await pool.open()
-db = await eddy_pg.DB.open(pool)
+db = await eddy_pg.DB.open(pool)  # creates eddy's job tables if needed
 ```
 
 **API:** write through the table. The reconcile is enqueued for you, in the same transaction as the row.
@@ -173,9 +166,39 @@ async with db.transaction() as tx:
 async def reconcile_cluster(cluster_id: UUID) -> None: ...
 ```
 
-## Middleware
+## Metrics and tracing
 
-Middleware wraps every reconcile and teardown, for metrics, tracing or logging. The first one registered is the outermost.
+Ready-made instrumentation ships as optional extras, so the core depends on neither library. Names and labels match the Go library's, so both look the same in your backend.
+
+**OpenTelemetry** (`pip install "eddy-pg[otel]"`): a span and a duration measurement per reconcile.
+
+```python
+from eddy_pg.otel import middleware
+
+ctl.middleware(middleware())  # uses the global providers by default
+```
+
+Spans are named `eddy.reconcile <kind>` or `eddy.teardown <kind>` and carry `eddy.kind`, `eddy.id`, `eddy.attempt` and `eddy.outcome`. The histogram is `eddy.reconcile.duration`, in seconds. Spans the reconciler starts become children.
+
+**Prometheus** (`pip install "eddy-pg[prometheus]"`):
+
+```python
+from eddy_pg.prometheus import Metrics
+
+metrics = Metrics()  # registers with the default registry
+ctl.middleware(metrics.middleware)
+ctl.on_leadership_change(metrics.set_leading)
+```
+
+| Metric | Labels | |
+|---|---|---|
+| `eddy_reconcile_duration_seconds` | `kind`, `operation`, `outcome` | Histogram of reconcile and teardown durations |
+| `eddy_reconciles_in_flight` | `kind` | Reconciles running now |
+| `eddy_leader` | — | 1 while this replica leads |
+
+In both, the outcome is `ok`, `retry` (asked to be checked again later), `error` (will be retried) or `permanent`. `eddy_pg.outcome(exc)` gives the same classification to your own middleware.
+
+**Your own middleware** wraps every reconcile and teardown the same way. The first one registered is the outermost.
 
 ```python
 @ctl.middleware
@@ -187,7 +210,33 @@ async def timing(ref: eddy_pg.Ref, call_next: eddy_pg.Handler) -> None:
         observe(ref.kind, ref.deleted, eddy_pg.attempt(), time.perf_counter() - start)
 ```
 
-`ctl.leading` reports leadership for a readiness probe, and `ctl.on_leadership_change(f)` calls `f(True)` or `f(False)` when it changes. `ctl.stop()` drains in-flight reconciles and makes `run()` return.
+`ctl.leading` reports leadership for a readiness probe, and `ctl.on_leadership_change(f)` calls `f(True)` or `f(False)` when it changes.
+
+## Running inside your app
+
+`ctl.run()` is an ordinary coroutine, so the controller can live in the same process as your API. `ctl.stop()` drains in-flight reconciles and makes `run()` return.
+
+```python
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
+    task = asyncio.create_task(ctl.run())
+    yield
+    ctl.stop()
+    await task
+```
+
+Every replica can run it this way: they elect one leader between them. To have every replica work the queue instead, pass `elect=False` together with `object_locks=True`, which takes a Postgres advisory lock per row so that no two processes reconcile the same row at once.
+
+## Migrations
+
+`DB.open` creates and upgrades River's tables, and is safe to call from several processes at once. To run migrations as a separate step:
+
+```python
+await eddy_pg.migrate(pool)  # in your migration step
+db = await eddy_pg.DB.open(pool, migrate=False)  # in the app; raises MigrationsMissing if absent
+```
+
+The tables are created from River's own migration files, bundled unmodified, so the result is identical to a database migrated by River or by the Go library.
 
 ## Controller options
 
@@ -201,6 +250,7 @@ async def timing(ref: eddy_pg.Ref, call_next: eddy_pg.Handler) -> None:
 | `poll_interval` | 1 | Seconds between checks for new work |
 | `lock_retry` | 2 | Seconds between leader-lock attempts and health checks |
 | `rescue_after` | 3600 | Seconds before a job left running by a dead worker is retried |
+| `object_locks` | `False` | Per-row advisory lock across processes; holds one extra pool connection per running reconcile |
 
 `DB.open(pool, queue="eddy")` sets the queue; every process must agree on it.
 
@@ -213,11 +263,10 @@ The two libraries share the job format, the queue names and the leader lock, and
 
 For this to work, declare the same table name, kind name, key column and scheduling settings on both sides, and give both models the same columns.
 
-Three differences to know:
+Two differences to know:
 
-- **River's tables are created by Go tooling**, as described under Install.
 - **Python works the job table itself.** River has no Python worker, so this library fetches, retries and cleans up jobs with its own SQL, following River's Go client. A change to River's table layout could require an update here; it was written against River 0.51 (migration 8).
-- **Not yet in Python:** per-object locks across processes, embedding in an existing River client, and ready-made OpenTelemetry and Prometheus middleware.
+- **There is no `Embed`.** The Go library can hand its workers to a River client your app already runs. River has no Python worker client to hand them to, so the equivalent here is running the controller in your own process, as described under "Running inside your app".
 
 ## Development
 
@@ -231,7 +280,9 @@ make test-db   # everything, against Postgres
                # (TEST_DB_URL=postgres://localhost:5432/eddy_test?sslmode=disable)
 ```
 
-`make test-db` needs Go on the PATH: a small Go program under `tests/support/gohelper` creates River's tables and plays the Go side of the interop tests.
+The interop tests also need Go on the PATH: a small Go program under `tests/support/gohelper` plays the Go side. Without Go they are skipped.
+
+River's migration files live in `src/eddy_pg/river_migrations`. To pick up a newer River, run `scripts/sync-river-migrations.sh <version>`; never edit them by hand.
 
 ## Releasing
 
@@ -241,4 +292,4 @@ To publish by hand: `uv build && uv publish`.
 
 ## License
 
-MIT. River, whose tables this library uses, is licensed under MPL-2.0.
+MIT, except for River's migration files in `src/eddy_pg/river_migrations`, which are bundled unmodified under River's licence, MPL-2.0 (see the `LICENSE` and `NOTICE.md` in that directory).

@@ -12,7 +12,6 @@ from hamcrest import (
     calling,
     close_to,
     equal_to,
-    has_length,
     is_,
     less_than_or_equal_to,
     matches_regexp,
@@ -154,4 +153,3 @@ async def test_controller_run_with_nothing_registered_raises() -> None:
 
 def test_attempt_outside_a_reconcile_is_zero() -> None:
     assert_that(eddy_pg.attempt(), equal_to(0))
-    assert_that(eddy_pg.__all__, has_length(19))

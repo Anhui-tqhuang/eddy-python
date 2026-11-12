@@ -23,7 +23,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
-      # Go creates River's tables and plays the Go side of the interop tests.
+      # Go plays the Go side of the interop tests.
       - uses: actions/setup-go@v5
         with:
           go-version-file: tests/support/gohelper/go.mod

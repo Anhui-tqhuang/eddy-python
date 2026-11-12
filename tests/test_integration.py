@@ -17,28 +17,81 @@ from hamcrest import (
     none,
     not_none,
 )
-from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel, ConfigDict
 
 import eddy_pg
 
-from .conftest import App, apps, controller, eventually, job_count, running, scalar
+from .conftest import (
+    App,
+    apps,
+    controller,
+    eventually,
+    job_count,
+    open_pool,
+    running,
+    scalar,
+)
 
 pytestmark = pytest.mark.integration
 
 
-async def test_open_without_river_tables_raises_migrations_missing(
-    database_url: str, empty_schema: str
-) -> None:
-    pool: AsyncConnectionPool[Any] = AsyncConnectionPool(
-        database_url, kwargs={"options": f"-c search_path={empty_schema}"}, open=False
-    )
-    await pool.open()
-    try:
-        with pytest.raises(eddy_pg.MigrationsMissing, match="river migrate-up"):
-            await eddy_pg.DB.open(pool)
-    finally:
-        await pool.close()
+class TestMigrate:
+    async def test_open_without_migrating_raises_migrations_missing(
+        self, database_url: str, empty_schema: str
+    ) -> None:
+        pool = await open_pool(database_url, empty_schema)
+        try:
+            with pytest.raises(eddy_pg.MigrationsMissing, match=r"eddy_pg\.migrate"):
+                await eddy_pg.DB.open(pool, migrate=False)
+        finally:
+            await pool.close()
+
+    async def test_migrate_creates_rivers_tables_once(
+        self, database_url: str, empty_schema: str
+    ) -> None:
+        pool = await open_pool(database_url, empty_schema)
+        try:
+            first = await eddy_pg.migrate(pool)
+            second = await eddy_pg.migrate(pool)
+            db = await eddy_pg.DB.open(pool, migrate=False)
+            recorded = await scalar(
+                db, "SELECT array_agg(version ORDER BY version) FROM river_migration"
+            )
+            tables = await scalar(
+                db,
+                "SELECT array_agg(tablename::text ORDER BY tablename) FROM pg_tables "
+                "WHERE schemaname = current_schema()",
+            )
+        finally:
+            await pool.close()
+
+        assert_that(first, equal_to([1, 2, 3, 4, 5, 6, 7, 8]))
+        assert_that(second, equal_to([]))
+        assert_that(recorded, equal_to(first))
+        assert_that(
+            tables,
+            equal_to(
+                [
+                    "river_job",
+                    "river_leader",
+                    "river_migration",
+                    "river_notification",
+                    "river_queue",
+                ]
+            ),
+        )
+
+    async def test_concurrent_opens_migrate_safely(
+        self, database_url: str, empty_schema: str
+    ) -> None:
+        pool = await open_pool(database_url, empty_schema)
+        try:
+            dbs = await asyncio.gather(*(eddy_pg.DB.open(pool) for _ in range(4)))
+            versions = await scalar(dbs[0], "SELECT count(*) FROM river_migration")
+        finally:
+            await pool.close()
+
+        assert_that(versions, equal_to(8))
 
 
 class TestTableWrites:
@@ -419,6 +472,56 @@ class TestScheduling:
             await eventually(lambda: done == 3)
 
         assert_that(peak, equal_to(1))
+
+
+class TestObjectLocks:
+    async def test_two_processes_never_reconcile_one_object_at_once(self, db: eddy_pg.DB) -> None:
+        kind = eddy_pg.Kind("app", int)
+        in_flight = peak = done = 0
+
+        async def handle(_: int) -> None:
+            nonlocal in_flight, peak, done
+            in_flight += 1
+            peak = max(peak, in_flight)
+            await asyncio.sleep(0.1)
+            in_flight -= 1
+            done += 1
+
+        # Two controllers that both work the queue, as two processes would.
+        replicas = [controller(db, object_locks=True), controller(db, object_locks=True)]
+        for ctl in replicas:
+            ctl.handle(kind)(handle)
+
+        await db.enqueue(kind.of(9), kind.of(9), kind.of(9), kind.of(9))
+        async with running(*replicas):
+            await eventually(lambda: done == 4)
+
+        assert_that(peak, equal_to(1))
+        # Every object lock was released.
+        held = await scalar(
+            db,
+            "SELECT count(*) FROM pg_locks l JOIN pg_database d ON d.oid = l.database "
+            "WHERE l.locktype = 'advisory' AND d.datname = current_database()",
+        )
+        assert_that(held, equal_to(0))
+
+    async def test_object_lock_is_released_after_a_failed_reconcile(self, db: eddy_pg.DB) -> None:
+        kind = eddy_pg.Kind("app", int)
+        ctl = controller(db, object_locks=True)
+        calls = 0
+
+        @ctl.handle(kind)
+        async def handle(_: int) -> None:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise eddy_pg.Retry(0.01)
+
+        async with running(ctl):
+            await db.enqueue(kind.of(1))
+            await eventually(lambda: _jobs(db, "state = 'completed'", 1))
+
+        assert_that(calls, equal_to(2))
 
 
 class TestMiddlewareAndLeadership:
