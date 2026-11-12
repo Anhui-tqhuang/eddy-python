@@ -1,0 +1,26 @@
+name: Publish
+
+# Publishes to PyPI when a version tag (v0.1.0) is pushed. It uses PyPI's
+# trusted publishing, so there is no token to store: on pypi.org, add this
+# repository and workflow ("publish.yml", environment "pypi") as a trusted
+# publisher for the eddy-pg project.
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Check the tag matches the package version
+        run: |
+          version="$(uv version --short)"
+          test "v${version}" = "${GITHUB_REF_NAME}" || {
+            echo "tag ${GITHUB_REF_NAME} does not match version ${version}"; exit 1; }
+      - run: uv build
+      - run: uv publish

@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <rect width="512" height="512" fill="#0D1117"/>
+  <circle cx="256" cy="256" r="196" fill="#121A24"/>
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round" stroke-width="16">
+    <!-- Eddy line mark: the stream curls back on itself (the reconcile loop) -->
+    <path stroke="#2DD4BF" d="M136 304 L246 304 C 316 304, 350 254, 330 206 C 310 158, 240 148, 206 186 C 176 220, 196 270, 240 266 C 276 262, 284 220, 258 206"/>
+    <!-- the river keeps flowing underneath -->
+    <path stroke="#2DD4BF" stroke-opacity="0.55" d="M136 348 C 176 330, 216 366, 256 348 C 296 330, 336 366, 376 348"/>
+  </g>
+</svg>

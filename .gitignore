@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Go test helper binary
+tests/support/gohelper/gohelper
+
+# Editors and OS
+.idea/
+.vscode/
+.DS_Store
+
+# Local env
+.env
+.env.*
