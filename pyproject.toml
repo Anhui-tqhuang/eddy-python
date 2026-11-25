@@ -1,6 +1,6 @@
 [project]
 name = "eddy-pg"
-version = "0.1.0"
+version = "0.2.0"
 description = "Reconcile loops for Python, with Postgres as the only moving part. Job-compatible with the Go eddy library."
 readme = "README.md"
 license = "MIT AND MPL-2.0"
