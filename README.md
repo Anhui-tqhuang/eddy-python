@@ -84,6 +84,8 @@ await ctl.run()
 
 If a write commits, its reconcile is guaranteed to happen. If it rolls back, nothing happens. There is no enqueue call to remember, no dual write and no outbox table.
 
+**One waiting job per object.** A write to an object whose reconcile already waits to run uses that job, and brings it forward if it waits for later (a `Retry`, or backoff after a failure); the reconcile still runs after the write. A write while the object's reconcile is running does enqueue, since that run may have read the row before the write. A resync skips objects whose job already waits, and a reconcile that raises `Retry` while another job for its object waits completes instead. So an object that keeps asking for a `Retry` has one retry loop, however many resyncs and writes come by. Deletions are never merged. The Go library does the same, so the two can share a queue.
+
 ## Writing rows
 
 ```python

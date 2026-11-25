@@ -280,7 +280,8 @@ class TestTransactions:
             assert_that(await job_count(db), equal_to(0))  # nothing visible before commit
 
         assert_that(touched, equal_to(2))
-        assert_that(await job_count(db), equal_to(5))
+        # Two rows, each written more than once: one job per row (merged).
+        assert_that(await job_count(db), equal_to(2))
 
 
 class TestOutcomes:
@@ -463,11 +464,17 @@ class TestScheduling:
             nonlocal in_flight, peak, done
             in_flight += 1
             peak = max(peak, in_flight)
+            # A write while the object's reconcile runs adds a job: enqueue it again, so
+            # jobs for it pile up while one runs. They must still never overlap.
+            if done < 2:
+                await db.enqueue(kind.of(1))
             await asyncio.sleep(0.05)
             in_flight -= 1
             done += 1
 
+        # Enqueued three times while waiting, the object has one job (merged).
         await db.enqueue(kind.of(1), kind.of(1), kind.of(1))
+        assert_that(await job_count(db), equal_to(1))
         async with running(ctl):
             await eventually(lambda: done == 3)
 
@@ -483,6 +490,10 @@ class TestObjectLocks:
             nonlocal in_flight, peak, done
             in_flight += 1
             peak = max(peak, in_flight)
+            # Each run enqueues the object again (a write during the run adds a job), so the
+            # other process may pick that job up while this one still runs.
+            if done < 3:
+                await db.enqueue(kind.of(9))
             await asyncio.sleep(0.1)
             in_flight -= 1
             done += 1
@@ -492,7 +503,7 @@ class TestObjectLocks:
         for ctl in replicas:
             ctl.handle(kind)(handle)
 
-        await db.enqueue(kind.of(9), kind.of(9), kind.of(9), kind.of(9))
+        await db.enqueue(kind.of(9))
         async with running(*replicas):
             await eventually(lambda: done == 4)
 

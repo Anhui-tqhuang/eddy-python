@@ -3,7 +3,7 @@ module github.com/Anhui-tqhuang/eddy-python/tests/support/gohelper
 go 1.26.0
 
 require (
-	github.com/Anhui-tqhuang/eddy v0.0.0-20261112085857-9dd81d766388
+	github.com/Anhui-tqhuang/eddy v0.0.0-20261125032158-64a4c1eb2fdb
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.12.0
 )

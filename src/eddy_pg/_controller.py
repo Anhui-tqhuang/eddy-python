@@ -437,8 +437,12 @@ class Controller:
                 kreg = self._kinds[name]
                 assert kreg.list_ids is not None
                 jobs = [NewJob.for_ref(kreg.kind.of(i)) for i in await kreg.list_ids()]
+            # One waiting job per object: cancel extras, then skip objects whose job waits.
+            await _river.cancel_extra_waiting(conn, name)
             for start in range(0, len(jobs), _INSERT_BATCH):
-                await _river.insert(conn, self._db.queue, jobs[start : start + _INSERT_BATCH])
+                await _river.insert(
+                    conn, self._db.queue, jobs[start : start + _INSERT_BATCH], resync=True
+                )
         log.debug("eddy: resync enqueued %d %s", len(jobs), name)
 
     # -- one job ----------------------------------------------------------
@@ -517,7 +521,7 @@ class Controller:
             outcome = lambda c: _river.snooze(c, job, _BUSY_RETRY)  # noqa: E731
         except Retry as r:
             after = r.after
-            outcome = lambda c: _river.snooze(c, job, after)  # noqa: E731
+            outcome = lambda c: _river.snooze_or_give_way(c, job, after)  # noqa: E731
         except Permanent as p:
             log.warning("eddy: reconcile of %s failed for good: %s", ref, p)
             message = str(p)

@@ -12,6 +12,14 @@ that a Go eddy process and a Python one can share a queue:
 
 This is the one place that depends on River's table layout; _migrate.py
 creates that layout from River's own migration files.
+
+One object, one waiting job (as in the Go library's merge.go). A write uses the
+object's waiting job, bringing it forward when it waits for later (a Retry, or
+backoff after an error), and inserts only without one; a resync skips objects
+whose job waits and cancels extra waiting jobs; a reconcile that asks for a
+Retry while another job for its object waits completes instead. A write while
+the object's reconcile runs still inserts (that run may have read the row
+before the write), and a deleted row's job is never merged.
 """
 
 from __future__ import annotations
@@ -71,8 +79,69 @@ class Job:
         return Ref(self.kind, dumps(self.key), deleted=self.gone is not None)
 
 
-async def insert(conn: AsyncConnection[Any], base_queue: str, jobs: list[NewJob]) -> None:
-    """Enqueue jobs on ``conn``, inside whatever transaction it is in."""
+WAITING_STATES = "('available', 'scheduled', 'retryable', 'pending')"
+
+
+def _key(job: NewJob) -> str:
+    return dumps({"kind": job.kind, "id": json.loads(job.id)})
+
+
+async def waiting_jobs(
+    conn: AsyncConnection[Any], jobs: list[NewJob], except_id: int = 0
+) -> dict[int, tuple[int, bool]]:
+    """By index into ``jobs``: the id of the waiting job of each job's object,
+    other than ``except_id``, and whether it waits for later than now. Jobs of
+    deleted rows are never looked up."""
+    index = [i for i, j in enumerate(jobs) if j.gone is None]
+    if not index:
+        return {}
+    cur = await conn.execute(
+        f"""
+        SELECT w.n, j.id, j.later
+        FROM unnest(%s::text[]::jsonb[]) WITH ORDINALITY AS w(key, n)
+        CROSS JOIN LATERAL (
+            SELECT id, scheduled_at > now() AS later FROM river_job
+            WHERE kind = '{JOB_KIND}' AND state IN {WAITING_STATES}
+              AND args @> w.key AND NOT args ? 'gone' AND id <> %s
+            ORDER BY scheduled_at LIMIT 1
+        ) j
+        """,
+        ([_key(jobs[i]) for i in index], except_id),
+    )
+    return {index[n - 1]: (job_id, later) for n, job_id, later in await cur.fetchall()}
+
+
+def _without_duplicates(jobs: list[NewJob]) -> list[NewJob]:
+    seen: set[str] = set()
+    out = []
+    for j in jobs:
+        if j.gone is None:
+            if (key := _key(j)) in seen:
+                continue
+            seen.add(key)
+        out.append(j)
+    return out
+
+
+async def insert(
+    conn: AsyncConnection[Any], base_queue: str, jobs: list[NewJob], *, resync: bool = False
+) -> None:
+    """Enqueue jobs on ``conn``, inside whatever transaction it is in. An object
+    with a waiting job gets no second one: a write brings that job forward when
+    it waits for later; a resync (``resync=True``) leaves it be."""
+    jobs = _without_duplicates(jobs)
+    if not jobs:
+        return
+    waiting = await waiting_jobs(conn, jobs)
+    if not resync:
+        later = [job_id for job_id, is_later in waiting.values() if is_later]
+        if later:
+            await conn.execute(
+                "UPDATE river_job SET state = 'available', scheduled_at = now() "
+                "WHERE id = ANY(%s) AND state IN ('scheduled', 'retryable')",
+                (later,),
+            )
+    jobs = [j for i, j in enumerate(jobs) if i not in waiting]
     if not jobs:
         return
     rows = [
@@ -186,6 +255,38 @@ async def cancel(conn: AsyncConnection[Any], job: Job, error: str) -> None:
         "UPDATE river_job SET state = 'cancelled', finalized_at = now(), "
         "errors = array_append(errors, %s::jsonb) WHERE id = %s AND state = 'running'",
         (_attempt_error(job, error), job.id),
+    )
+
+
+async def snooze_or_give_way(conn: AsyncConnection[Any], job: Job, after: float) -> None:
+    """A reconcile asked for a Retry: snooze, unless another job for the object
+    already waits (a write during this run). That one carries on, and this one
+    completes, so no second retry loop forms."""
+    others = await waiting_jobs(conn, [NewJob(job.kind, dumps(job.key))], except_id=job.id)
+    if others:
+        await complete(conn, job)
+    else:
+        await snooze(conn, job, after)
+
+
+async def cancel_extra_waiting(conn: AsyncConnection[Any], kind: str) -> None:
+    """Cancel all but the earliest waiting job of each object of ``kind``. Two
+    jobs in flight at once can each miss the other and both snooze; this takes
+    the loops back to one."""
+    await conn.execute(
+        f"""
+        UPDATE river_job SET state = 'cancelled', finalized_at = now()
+        WHERE state IN {WAITING_STATES} AND id IN (
+            SELECT id FROM (
+                SELECT id,
+                       row_number() OVER (PARTITION BY args->'id' ORDER BY scheduled_at, id) AS n
+                FROM river_job
+                WHERE kind = '{JOB_KIND}' AND state IN {WAITING_STATES}
+                  AND args->>'kind' = %s AND NOT args ? 'gone'
+            ) w WHERE n > 1
+        )
+        """,
+        (kind,),
     )
 
 
