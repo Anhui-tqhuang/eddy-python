@@ -8,6 +8,10 @@
 
 <p align="center"><a href="https://pypi.org/project/eddy-pg/">pypi.org/project/eddy-pg</a></p>
 
+<p align="center">
+  <a href="https://pepy.tech/projects/eddy-pg"><img src="https://static.pepy.tech/personalized-badge/eddy-pg?period=total&units=INTERNATIONAL_SYSTEM&left_color=BLACK&right_color=GREEN&left_text=downloads" alt="PyPI Downloads"></a>
+</p>
+
 ---
 
 > **Status:** pre-alpha. The API may still change.
