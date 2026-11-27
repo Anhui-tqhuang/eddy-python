@@ -9,6 +9,11 @@
 <p align="center"><a href="https://pypi.org/project/eddy-pg/">pypi.org/project/eddy-pg</a></p>
 
 <p align="center">
+  <a href="https://github.com/Anhui-tqhuang/eddy-python/actions/workflows/ci.yml"><img src="https://github.com/Anhui-tqhuang/eddy-python/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://codecov.io/gh/Anhui-tqhuang/eddy-python"><img src="https://codecov.io/gh/Anhui-tqhuang/eddy-python/graph/badge.svg" alt="Coverage"></a>
+  <a href="https://pypi.org/project/eddy-pg/"><img src="https://img.shields.io/pypi/v/eddy-pg" alt="PyPI version"></a>
+  <a href="https://pypi.org/project/eddy-pg/"><img src="https://img.shields.io/pypi/pyversions/eddy-pg" alt="Python versions"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/pypi/l/eddy-pg" alt="License"></a>
   <a href="https://pepy.tech/projects/eddy-pg"><img src="https://static.pepy.tech/personalized-badge/eddy-pg?period=total&units=INTERNATIONAL_SYSTEM&left_color=BLACK&right_color=GREEN&left_text=downloads" alt="PyPI Downloads"></a>
 </p>
 

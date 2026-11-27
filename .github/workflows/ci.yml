@@ -30,4 +30,9 @@ jobs:
           cache-dependency-path: tests/support/gohelper/go.sum
       - run: uv sync
       - run: make lint
-      - run: uv run pytest --cov=eddy_pg --cov-report=term-missing --cov-fail-under=80
+      - run: uv run pytest --cov=eddy_pg --cov-report=term-missing --cov-report=xml --cov-fail-under=80
+      - uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: coverage.xml
+          fail_ci_if_error: false
